@@ -490,6 +490,39 @@ def find_named_upper_arms(arm):
     return None
 
 
+def find_joint_node_upper_arms(arm):
+    """Handle glTF rigs whose joint names label the segment's distal endpoint."""
+    result = {}
+    for side in ("L", "R"):
+        shoulders = [
+            bone for bone in arm.pose.bones
+            if "shoulder" in compact_name(bone.name) and side_hint(bone.name) == side
+        ]
+        for shoulder in shoulders:
+            elbow = next(
+                (
+                    child for child in shoulder.children
+                    if "elbow" in compact_name(child.name) and side_hint(child.name) == side
+                ),
+                None,
+            )
+            if elbow and any(
+                "wrist" in compact_name(child.name) and side_hint(child.name) == side
+                for child in elbow.children
+            ):
+                result[side] = elbow
+                break
+
+    if "L" in result and "R" in result:
+        log(
+            "Joint-node detection: "
+            f"L={result['L'].name}, R={result['R'].name} "
+            "(shoulder nodes treated as clavicles)"
+        )
+        return result["L"], result["R"]
+    return None
+
+
 # -----------------------------------------------------------------------------
 # GEOMETRY/HIERARCHY FALLBACK
 # -----------------------------------------------------------------------------
@@ -649,6 +682,18 @@ def find_forearm(upper, target_direction):
     if not desc:
         return None
 
+    if "elbow" in compact_name(upper.name):
+        wrist = next(
+            (
+                child for child in upper.children
+                if "wrist" in compact_name(child.name) and side_hint(child.name) == side
+            ),
+            None,
+        )
+        if wrist:
+            log(f"Forearm for {upper.name}: {wrist.name} (joint-node hierarchy)")
+            return wrist
+
     # First prefer strong names.
     named = []
     for b, depth in desc:
@@ -695,6 +740,24 @@ def find_forearm(upper, target_direction):
     if best:
         log(f"Forearm for {upper.name}: {best.name} (geometry score {best_score:.1f})")
     return best
+
+
+def straighten_chain_below(forearm, target_direction, torso_reference, max_depth=2):
+    """Align wrist/hand bones below an already aligned forearm."""
+    straightened = []
+    for b, depth in descendants_with_depth(forearm, max_depth):
+        c = compact_name(b.name)
+        if any(x in c for x in (
+            "finger", "thumb", "index", "middle", "ring", "pinky",
+            "twist", "roll", "ik", "pole", "target", "ctrl", "control",
+        )):
+            continue
+        rotate_pose_bone_axis_to(b, target_direction, torso_reference=torso_reference)
+        bpy.context.view_layer.update()
+        straightened.append(b.name)
+    if straightened:
+        log(f"Straightened below {forearm.name}: {', '.join(straightened)}")
+    return straightened
 
 
 # -----------------------------------------------------------------------------
@@ -1029,7 +1092,9 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
         if RESET_POSE_FIRST:
             reset_pose(arm)
 
-        pair = find_named_upper_arms(arm)
+        pair = find_joint_node_upper_arms(arm)
+        if pair is None:
+            pair = find_named_upper_arms(arm)
         if pair is None:
             pair = find_geometric_upper_arms(arm)
 
@@ -1090,6 +1155,8 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
 
             if fa:
                 rotate_pose_bone_axis_to(fa, target_a, torso_reference=shoulder_mid)
+                bpy.context.view_layer.update()
+                straighten_chain_below(fa, target_a, shoulder_mid)
                 forearm_bones.append(fa)
                 forearms.append(fa.name)
             else:
@@ -1097,6 +1164,8 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
 
             if fb:
                 rotate_pose_bone_axis_to(fb, target_b, torso_reference=shoulder_mid)
+                bpy.context.view_layer.update()
+                straighten_chain_below(fb, target_b, shoulder_mid)
                 forearm_bones.append(fb)
                 forearms.append(fb.name)
             else:
@@ -1127,6 +1196,27 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
         bpy.context.view_layer.update()
 
     return arm, (arm_a.name, arm_b.name), tuple(forearms)
+
+
+def use_preposed_instance_rig():
+    """Return the already T-posed rig produced by the weighted backend."""
+    arm = find_armature()
+    if not arm:
+        raise RuntimeError("instance-rig output did not contain an armature")
+
+    pair = find_joint_node_upper_arms(arm)
+    if pair is None:
+        raise RuntimeError("instance-rig output did not contain the expected shoulder/elbow/wrist chains")
+    arm_a, arm_b = pair
+    forearm_a = find_forearm(arm_a, Vector((1.0, 0.0, 0.0)))
+    forearm_b = find_forearm(arm_b, Vector((-1.0, 0.0, 0.0)))
+    if forearm_a is None or forearm_b is None:
+        raise RuntimeError("instance-rig output did not contain both forearms")
+
+    log("Using weighted T-pose produced by instance-rig.")
+    log("Upper arms:", arm_a.name, ",", arm_b.name)
+    log("Forearms:", forearm_a.name, ",", forearm_b.name)
+    return arm, (arm_a.name, arm_b.name), (forearm_a.name, forearm_b.name)
 
 
 def prepare_instance_rigged_input(input_path):
@@ -1282,11 +1372,14 @@ def run_from_command_line():
                 bpy.ops.import_scene.gltf(filepath=str(instance_rig_output))
                 input_path = instance_rig_output
 
-        arm, upper_arms, forearms = make_t_pose(
-            auto_rig=options["auto_rig"] and not auto_rig_used,
-            bind_method=options["bind_method"],
-            apply_rest_pose=options["apply_rest_pose"],
-        )
+        if auto_rig_used:
+            arm, upper_arms, forearms = use_preposed_instance_rig()
+        else:
+            arm, upper_arms, forearms = make_t_pose(
+                auto_rig=options["auto_rig"],
+                bind_method=options["bind_method"],
+                apply_rest_pose=options["apply_rest_pose"],
+            )
         if options["auto_rig"]:
             stretch_limit = max(source_max_edge_length * 1.8, 1e-6)
             removed_faces = remove_overstretched_faces(armature_meshes(arm), stretch_limit)
