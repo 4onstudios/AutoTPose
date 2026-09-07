@@ -1,0 +1,15 @@
+LICENSE
+README.md
+pyproject.toml
+src/autotpose_core/__init__.py
+src/autotpose_core/contracts.py
+src/autotpose_core/instance_rig_bridge.py
+src/autotpose_core/interface.py
+src/autotpose_core/landmarks.py
+src/autotpose_core/skinning.py
+src/autotpose_core.egg-info/PKG-INFO
+src/autotpose_core.egg-info/SOURCES.txt
+src/autotpose_core.egg-info/dependency_links.txt
+src/autotpose_core.egg-info/requires.txt
+src/autotpose_core.egg-info/top_level.txt
+tests/test_contracts.py

@@ -1,0 +1,44 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# Blender backups / autosaves
+*.blend1
+*.blend2
+*.blend@
+*.blend~
+
+# Local test assets / exports
+assets/private/
+exports/
+*.fbx
+*.glb
+*.gltf
+*.obj
+
+# Build / packaging
+build/
+dist/
+*.zip
+
+# Future optional compiled-extension build artifacts
+/target/
+*.pyd
+*.so
+*.dylib

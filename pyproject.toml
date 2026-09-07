@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotpose-core"
+version = "0.2.0"
+description = "Runtime-neutral core contracts for the AutoTPose Blender project"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "4ON Studios" }]
+dependencies = [
+    "numpy<2",
+    "instance-rig @ git+https://github.com/cansik/instance-rig.git",
+]
+
+[project.urls]
+Homepage = "https://www.4onstudios.com/"
+Repository = "https://github.com/4onstudios/AutoTPose"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" role="img" aria-labelledby="title description">
+  <title id="title">AutoTPose logo</title>
+  <desc id="description">A stylized humanoid in a T-pose beside the AutoTPose wordmark.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#41D7C7"/>
+      <stop offset="1" stop-color="#4986F7"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="280" rx="36" fill="#101828"/>
+  <g transform="translate(54 32)" fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="108" cy="43" r="27" fill="#41D7C7" stroke="none"/>
+    <path d="M108 82v61M108 104 32 133M108 104l76 29M108 143l-47 68M108 143l47 68" stroke-width="22"/>
+    <circle cx="32" cy="133" r="10" fill="#4986F7" stroke="none"/>
+    <circle cx="184" cy="133" r="10" fill="#4986F7" stroke="none"/>
+    <circle cx="61" cy="211" r="10" fill="#4986F7" stroke="none"/>
+    <circle cx="155" cy="211" r="10" fill="#4986F7" stroke="none"/>
+  </g>
+  <g fill="#F8FAFC" font-family="Arial, Helvetica, sans-serif">
+    <text x="286" y="133" font-size="78" font-weight="700" letter-spacing="-3">AutoT</text>
+    <text x="505" y="133" font-size="78" font-weight="700" letter-spacing="-3" fill="#41D7C7">Pose</text>
+    <text x="292" y="180" font-size="23" font-weight="600" letter-spacing="4" fill="#B8C5D9">RIG NORMALIZATION FOR BLENDER</text>
+  </g>
+</svg>

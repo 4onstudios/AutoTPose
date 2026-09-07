@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "AutoTPose for Mesh2Motion",
+  "version": "1.0.0",
+  "description": "Adds a one-click AutoTPose T-pose flow for models on app.mesh2motion.org.",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": [
+    "https://app.mesh2motion.org/*",
+    "https://*.mesh2motion.org/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.mesh2motion.org/*",
+        "https://*.mesh2motion.org/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

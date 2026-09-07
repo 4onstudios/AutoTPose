@@ -1,0 +1,2 @@
+numpy<2
+instance-rig @ git+https://github.com/cansik/instance-rig.git
