@@ -16,6 +16,7 @@ import bpy
 import json
 import re
 import sys
+from collections import deque
 from pathlib import Path
 from mathutils import Vector, Matrix
 
@@ -223,6 +224,128 @@ def remove_overstretched_faces(meshes, max_edge_length):
         removed_faces += len(face_indices)
 
     return removed_faces
+
+
+def remove_rough_edge_faces(meshes, min_long_edge, min_aspect_ratio=15.0):
+    if min_long_edge <= 0:
+        raise ValueError("min_long_edge must be positive")
+    if min_aspect_ratio <= 1:
+        raise ValueError("min_aspect_ratio must be greater than 1")
+
+    removed_faces = 0
+    for obj in meshes:
+        mesh = obj.data
+        world_vertices = [obj.matrix_world @ vertex.co for vertex in mesh.vertices]
+        face_indices = []
+        for polygon in mesh.polygons:
+            vertices = list(polygon.vertices)
+            lengths = [
+                (world_vertices[vertices[index]] - world_vertices[vertices[(index + 1) % len(vertices)]]).length
+                for index in range(len(vertices))
+            ]
+            positive_lengths = [length for length in lengths if length > 1e-9]
+            if not positive_lengths:
+                face_indices.append(polygon.index)
+                continue
+
+            longest = max(positive_lengths)
+            shortest = min(positive_lengths)
+            if longest >= min_long_edge and longest / shortest >= min_aspect_ratio:
+                face_indices.append(polygon.index)
+
+        if not face_indices:
+            continue
+
+        import bmesh
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        faces = [bm.faces[index] for index in face_indices if index < len(bm.faces)]
+        bmesh.ops.delete(bm, geom=faces, context="FACES_ONLY")
+        loose_edges = [edge for edge in bm.edges if not edge.link_faces]
+        if loose_edges:
+            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+        loose_vertices = [vertex for vertex in bm.verts if not vertex.link_edges]
+        if loose_vertices:
+            bmesh.ops.delete(bm, geom=loose_vertices, context="VERTS")
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+        removed_faces += len(face_indices)
+
+    return removed_faces
+
+
+def remove_tiny_mesh_islands(meshes, max_extent, max_faces=8):
+    if max_extent <= 0:
+        raise ValueError("max_extent must be positive")
+    if max_faces < 1:
+        raise ValueError("max_faces must be at least 1")
+
+    removed_faces = 0
+    for obj in meshes:
+        mesh = obj.data
+
+        import bmesh
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+        bm.faces.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+
+        seen = set()
+        faces_to_delete = []
+        for face in bm.faces:
+            if face in seen:
+                continue
+            queue = deque([face])
+            seen.add(face)
+            component_faces = []
+            component_vertices = set()
+            while queue:
+                current = queue.popleft()
+                component_faces.append(current)
+                component_vertices.update(current.verts)
+                for edge in current.edges:
+                    for neighbor in edge.link_faces:
+                        if neighbor not in seen:
+                            seen.add(neighbor)
+                            queue.append(neighbor)
+
+            if len(component_faces) > max_faces:
+                continue
+            world_vertices = [obj.matrix_world @ vertex.co for vertex in component_vertices]
+            extent = 0.0
+            for axis in ("x", "y", "z"):
+                values = [getattr(vertex, axis) for vertex in world_vertices]
+                extent = max(extent, max(values) - min(values))
+            if extent <= max_extent:
+                faces_to_delete.extend(component_faces)
+
+        if faces_to_delete:
+            bmesh.ops.delete(bm, geom=faces_to_delete, context="FACES_ONLY")
+            removed_faces += len(faces_to_delete)
+        loose_edges = [edge for edge in bm.edges if not edge.link_faces]
+        if loose_edges:
+            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+        loose_vertices = [vertex for vertex in bm.verts if not vertex.link_edges]
+        if loose_vertices:
+            bmesh.ops.delete(bm, geom=loose_vertices, context="VERTS")
+
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+
+    return removed_faces
+
+
+def smooth_mesh_normals(meshes):
+    for obj in meshes:
+        for polygon in obj.data.polygons:
+            polygon.use_smooth = True
+        obj.data.update()
 
 
 def detect_mesh_landmarks(meshes):
@@ -1382,14 +1505,28 @@ def run_from_command_line():
             )
         if options["auto_rig"]:
             stretch_limit = max(source_max_edge_length * 1.8, 1e-6)
-            removed_faces = remove_overstretched_faces(armature_meshes(arm), stretch_limit)
+            meshes = armature_meshes(arm)
+            removed_faces = remove_overstretched_faces(meshes, stretch_limit)
+            rough_edge_limit = max(source_max_edge_length * 0.5, 1e-6)
+            removed_rough_faces = remove_rough_edge_faces(meshes, rough_edge_limit)
+            island_extent_limit = max(source_max_edge_length * 0.95, 1e-6)
+            removed_island_faces = remove_tiny_mesh_islands(meshes, island_extent_limit)
+            smooth_mesh_normals(meshes)
             cleanup = {
                 "source_max_edge_length": source_max_edge_length,
                 "stretch_edge_limit": stretch_limit,
                 "removed_overstretched_faces": removed_faces,
+                "rough_edge_limit": rough_edge_limit,
+                "removed_rough_edge_faces": removed_rough_faces,
+                "tiny_island_extent_limit": island_extent_limit,
+                "removed_tiny_island_faces": removed_island_faces,
             }
             if removed_faces:
                 log(f"Removed {removed_faces} overstretched faces before export.")
+            if removed_rough_faces:
+                log(f"Removed {removed_rough_faces} rough edge faces before export.")
+            if removed_island_faces:
+                log(f"Removed {removed_island_faces} tiny island faces before export.")
         output_path = write_output(output_path)
         write_report(
             options["report"],
