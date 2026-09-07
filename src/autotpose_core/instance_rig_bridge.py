@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 
-def straighten_instance_rig_arms(rigger, rig) -> None:
-    """Refine instance-rig's shoulder-only correction into a full 3D T-pose."""
+def straighten_instance_rig_limbs(rigger, rig) -> None:
+    """Refine instance-rig's correction into straight arm and leg chains."""
     import numpy as np
 
     from instancerig import _math
@@ -27,7 +27,7 @@ def straighten_instance_rig_arms(rigger, rig) -> None:
         source = np.asarray(vector, dtype=float)
         source_length = np.linalg.norm(source)
         if source_length < 1e-8:
-            raise RuntimeError("instance-rig produced a zero-length arm segment")
+            raise RuntimeError("instance-rig produced a zero-length limb segment")
         source /= source_length
 
         target = np.asarray(target, dtype=float)
@@ -61,7 +61,7 @@ def straighten_instance_rig_arms(rigger, rig) -> None:
             joints = {joint.name: joint for joint in rig.root_joint}
             if proximal_name not in joints or distal_name not in joints:
                 raise RuntimeError(
-                    f"instance-rig output is missing required arm joints: "
+                    f"instance-rig output is missing required limb joints: "
                     f"{proximal_name}, {distal_name}"
                 )
             vector = joints[distal_name].world_position - joints[proximal_name].world_position
@@ -80,6 +80,23 @@ def straighten_instance_rig_arms(rigger, rig) -> None:
             ("rightElbow", "rightWrist", (-1.0, 0.0, 0.0)),
         )
     )
+    align_segments(
+        (
+            ("leftHip", "leftKnee", (0.14, -1.0, 0.0)),
+            ("rightHip", "rightKnee", (-0.14, -1.0, 0.0)),
+        )
+    )
+    align_segments(
+        (
+            ("leftKnee", "leftAnkle", (0.14, -1.0, 0.0)),
+            ("rightKnee", "rightAnkle", (-0.14, -1.0, 0.0)),
+        )
+    )
+
+
+def straighten_instance_rig_arms(rigger, rig) -> None:
+    """Backward-compatible alias for the full limb correction."""
+    straighten_instance_rig_limbs(rigger, rig)
 
 
 def _project_root() -> Path:
@@ -148,14 +165,14 @@ def generate_instance_rigged_model(
         "from pathlib import Path\n"
         "from instancerig.InstanceRig import InstanceRig\n"
         f"sys.path.insert(0, {str(_project_root() / 'src')!r})\n"
-        "from autotpose_core.instance_rig_bridge import straighten_instance_rig_arms\n"
+        "from autotpose_core.instance_rig_bridge import straighten_instance_rig_limbs\n"
         f"input_path = Path({str(input_file)!r})\n"
         f"output_path = Path({str(output_file)!r})\n"
         "rigger = InstanceRig()\n"
         "rigger.on_progress = lambda message: print(message)\n"
         "rig = rigger.auto_rig(str(input_path), str(output_path))\n"
-        "print('straightening full arm chains')\n"
-        "straighten_instance_rig_arms(rigger, rig)\n"
+        "print('straightening full limb chains')\n"
+        "straighten_instance_rig_limbs(rigger, rig)\n"
         "rigger.export_method(str(output_path), rigger._mesh, rig)\n"
     )
 
