@@ -178,6 +178,53 @@ def scene_meshes():
     return meshes
 
 
+def mesh_max_edge_length(meshes):
+    max_length = 0.0
+    for mesh in meshes:
+        world_vertices = [mesh.matrix_world @ vertex.co for vertex in mesh.data.vertices]
+        for edge in mesh.data.edges:
+            max_length = max(
+                max_length,
+                (world_vertices[edge.vertices[0]] - world_vertices[edge.vertices[1]]).length,
+            )
+    return max_length
+
+
+def remove_overstretched_faces(meshes, max_edge_length):
+    if max_edge_length <= 0:
+        raise ValueError("max_edge_length must be positive")
+
+    removed_faces = 0
+    for obj in meshes:
+        mesh = obj.data
+        world_vertices = [obj.matrix_world @ vertex.co for vertex in mesh.vertices]
+        face_indices = []
+        for polygon in mesh.polygons:
+            vertices = list(polygon.vertices)
+            for index, first in enumerate(vertices):
+                second = vertices[(index + 1) % len(vertices)]
+                if (world_vertices[first] - world_vertices[second]).length > max_edge_length:
+                    face_indices.append(polygon.index)
+                    break
+
+        if not face_indices:
+            continue
+
+        import bmesh
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        faces = [bm.faces[index] for index in face_indices if index < len(bm.faces)]
+        bmesh.ops.delete(bm, geom=faces, context="FACES_ONLY")
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+        removed_faces += len(face_indices)
+
+    return removed_faces
+
+
 def detect_mesh_landmarks(meshes):
     source_dir = Path(__file__).resolve().parent / "src"
     if str(source_dir) not in sys.path:
@@ -803,14 +850,14 @@ def validate_t_pose_quality(upper_left, upper_right, forearms=()):
 
     left_side_projection = left_vec.dot(side_axis)
     right_side_projection = right_vec.dot(side_axis)
-    if left_side_projection > -0.05 or right_side_projection < 0.05:
+    if left_side_projection > -0.85 or right_side_projection < 0.85:
         raise RuntimeError(
-            "T-pose validation failed: the arms sit on the same side of the torso instead of being mirrored. "
+            "T-pose validation failed: the arms are not aligned with the shoulder-to-shoulder T axis. "
             f"left_side={left_side_projection:.2f}, right_side={right_side_projection:.2f}"
         )
 
     mirrored_alignment = left_vec.dot(right_vec)
-    if mirrored_alignment > 0.25:
+    if mirrored_alignment > -0.75:
         raise RuntimeError(
             "T-pose validation failed: the arms are not mirrored correctly and point in roughly the same direction. "
             f"alignment={mirrored_alignment:.2f}"
@@ -838,7 +885,7 @@ def validate_t_pose_quality(upper_left, upper_right, forearms=()):
         if expected_upper_vec is None:
             raise RuntimeError(f"T-pose validation failed: expected upper arm {expected_upper.name} has no valid direction.")
         best_projection = max(v.dot(expected_upper_vec) for v in candidate_vectors)
-        if best_projection < 0.25:
+        if best_projection < 0.70:
             raise RuntimeError(
                 f"T-pose validation failed: forearm {bone.name} is not continuing the expected outward direction. "
                 f"projection={best_projection:.2f}"
@@ -851,6 +898,69 @@ def validate_t_pose_quality(upper_left, upper_right, forearms=()):
         "left_side_projection": float(left_side_projection),
         "right_side_projection": float(right_side_projection),
         "mirrored_alignment": float(mirrored_alignment),
+    }
+
+
+def armature_meshes(armature):
+    meshes = []
+    for mesh in scene_meshes():
+        if mesh.find_armature() == armature:
+            meshes.append(mesh)
+            continue
+        if any(modifier.type == "ARMATURE" and modifier.object == armature for modifier in mesh.modifiers):
+            meshes.append(mesh)
+    return meshes
+
+
+def validate_mesh_tpose_reach(armature, upper_left, upper_right, forearms=()):
+    """Ensure the visible mesh follows the generated T-pose arm span."""
+    meshes = armature_meshes(armature)
+    if not meshes:
+        raise RuntimeError("T-pose mesh validation failed: no meshes are bound to the generated armature.")
+
+    middle = (upper_left.head + upper_right.head) * 0.5
+    shoulder_axis = upper_right.head - upper_left.head
+    if shoulder_axis.length < 1e-6:
+        raise RuntimeError("T-pose mesh validation failed: shoulder axis is degenerate.")
+    right_axis = shoulder_axis.normalized()
+    left_axis = -right_axis
+
+    def projected_endpoint_reach(axis, bones):
+        reach = 0.0
+        for bone in bones:
+            if bone is None:
+                continue
+            reach = max(reach, (bone.head - middle).dot(axis), (bone.tail - middle).dot(axis))
+        return reach
+
+    left_bones = [upper_left] + [bone for bone in forearms if bone and bone.parent == upper_left]
+    right_bones = [upper_right] + [bone for bone in forearms if bone and bone.parent == upper_right]
+    left_bone_reach = projected_endpoint_reach(left_axis, left_bones)
+    right_bone_reach = projected_endpoint_reach(right_axis, right_bones)
+    if left_bone_reach <= 1e-6 or right_bone_reach <= 1e-6:
+        raise RuntimeError("T-pose mesh validation failed: arm reach is degenerate.")
+
+    left_mesh_reach = 0.0
+    right_mesh_reach = 0.0
+    for mesh in meshes:
+        for vertex in mesh.data.vertices:
+            world = mesh.matrix_world @ vertex.co
+            left_mesh_reach = max(left_mesh_reach, (world - middle).dot(left_axis))
+            right_mesh_reach = max(right_mesh_reach, (world - middle).dot(right_axis))
+
+    left_ratio = left_mesh_reach / left_bone_reach
+    right_ratio = right_mesh_reach / right_bone_reach
+    if left_ratio < 0.70 or right_ratio < 0.70:
+        raise RuntimeError(
+            "T-pose mesh validation failed: generated bones reached a T-pose, but the skinned mesh did not follow. "
+            f"left_ratio={left_ratio:.2f}, right_ratio={right_ratio:.2f}"
+        )
+
+    return {
+        "left_mesh_reach": float(left_mesh_reach),
+        "right_mesh_reach": float(right_mesh_reach),
+        "left_bone_reach": float(left_bone_reach),
+        "right_bone_reach": float(right_bone_reach),
     }
 
 
@@ -939,8 +1049,13 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
         if shoulder_axis.length < 1e-6:
             shoulder_axis = arm_b.tail - arm_a.tail
 
-        target_a = arm_outward_direction(arm_a, shoulder_mid, preferred_axis=arm_a.head - shoulder_mid)
-        target_b = arm_outward_direction(arm_b, shoulder_mid, preferred_axis=arm_b.head - shoulder_mid)
+        if shoulder_axis.length > 1e-6:
+            side_axis = shoulder_axis.normalized()
+            target_a = -side_axis
+            target_b = side_axis
+        else:
+            target_a = arm_outward_direction(arm_a, shoulder_mid, preferred_axis=arm_a.head - shoulder_mid)
+            target_b = arm_outward_direction(arm_b, shoulder_mid, preferred_axis=arm_b.head - shoulder_mid)
 
         if target_a is None or target_b is None:
             # Extremely unusual fallback: use the separation of the bone anchors.
@@ -998,6 +1113,8 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
         if apply_rest_pose:
             if auto_rig:
                 bake_generated_tpose_as_rest(arm, bind_method)
+                mesh_validation = validate_mesh_tpose_reach(arm, arm_a, arm_b, tuple(forearm_bones))
+                log("Mesh validation passed:", mesh_validation)
             else:
                 bpy.ops.pose.armature_apply(selected=False)
             log("Applied T-pose as NEW REST POSE.")
@@ -1054,6 +1171,7 @@ def command_line_options(arguments):
         "output": None,
         "report": None,
         "auto_rig": True,
+        "prefer_instance_rig": True,
         "bind_method": BIND_METHOD,
         "apply_rest_pose": False,
         "straighten_forearms": True,
@@ -1068,8 +1186,12 @@ def command_line_options(arguments):
             options["report"] = next(iterator, None)
         elif argument in {"--auto-rig", "--prefer-instance-rig"}:
             options["auto_rig"] = True
+            options["prefer_instance_rig"] = True
         elif argument in {"--no-auto-rig", "--native-rig-only"}:
-            options["auto_rig"] = False
+            if argument == "--native-rig-only":
+                options["prefer_instance_rig"] = False
+            else:
+                options["auto_rig"] = False
         elif argument == "--bind-method":
             options["bind_method"] = next(iterator, None)
         elif argument == "--apply-rest-pose":
@@ -1144,12 +1266,14 @@ def run_from_command_line():
 
     try:
         input_path = load_input(options["input"])
+        source_max_edge_length = mesh_max_edge_length(scene_meshes())
         output_path = supported_path(options["output"], {".blend", ".glb"}, "--output")
         if input_path == output_path:
             raise ValueError("--output must differ from --input")
 
         auto_rig_used = False
-        if options["auto_rig"]:
+        cleanup = None
+        if options["auto_rig"] and options["prefer_instance_rig"]:
             instance_rig_output = prepare_instance_rigged_input(str(input_path))
             if instance_rig_output is not None:
                 auto_rig_used = True
@@ -1163,6 +1287,16 @@ def run_from_command_line():
             bind_method=options["bind_method"],
             apply_rest_pose=options["apply_rest_pose"],
         )
+        if options["auto_rig"]:
+            stretch_limit = max(source_max_edge_length * 1.8, 1e-6)
+            removed_faces = remove_overstretched_faces(armature_meshes(arm), stretch_limit)
+            cleanup = {
+                "source_max_edge_length": source_max_edge_length,
+                "stretch_edge_limit": stretch_limit,
+                "removed_overstretched_faces": removed_faces,
+            }
+            if removed_faces:
+                log(f"Removed {removed_faces} overstretched faces before export.")
         output_path = write_output(output_path)
         write_report(
             options["report"],
@@ -1176,6 +1310,7 @@ def run_from_command_line():
             bind_method=options["bind_method"] if options["auto_rig"] else None,
             straighten_forearms=STRAIGHTEN_FOREARMS,
             validation_passed=True,
+            cleanup=cleanup,
             input=str(input_path),
             output=str(output_path),
         )
@@ -1183,7 +1318,7 @@ def run_from_command_line():
     except Exception as exc:
         write_report(options["report"], "error", error=str(exc))
         print("\n[Auto T-Pose] ERROR:", exc)
-        raise
+        sys.exit(1)
 
 
 if __name__ == "__main__":
