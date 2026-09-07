@@ -7,12 +7,12 @@ programmatically. Do not modify the source asset in place.
 
 - Blender is installed and callable as `blender`, or provide its path through
   the `BLENDER` Make variable.
-- The input is a `.blend`, `.glb`, or `.gltf` file containing a rigged humanoid
-  mesh or armature.
+- The input is a `.blend`, `.glb`, or `.gltf` file containing a humanoid mesh
+  or armature.
 - The requested output and report paths are writable and differ from the input.
 
-A GLB with no glTF skin or joints imports as a mesh-only scene. To add a basic
-humanoid armature and automatic weights before posing, use `make rig-pose`.
+A GLB with no glTF skin or joints imports as a mesh-only scene. To rig and pose
+an unrigged humanoid, use `make rig-pose`.
 
 ## Non-destructive operation
 
@@ -34,13 +34,10 @@ make rig-pose \
   REPORT=/absolute/path/rigged-tpose-report.json
 ```
 
-This estimates a biped skeleton from the mesh bounds, creates a basic humanoid
-armature, and binds it with Blender bone heat. When bone heat fails, AutoTPose
-uses deterministic, topology-independent distance weights. Set
-`BIND_METHOD=DISTANCE` to use the fallback directly or `BIND_METHOD=BONE_HEAT`
-to reject fallback behavior. It is appropriate only for upright, front-facing
-humanoid meshes; inspect and refine the weights in Blender before animation
-production.
+This uses the project-local instance-rig backend, straightens the generated arm
+and leg chains, and cleans rough generated mesh edges. It is appropriate only for
+upright, front-facing humanoid meshes; inspect and refine the weights in Blender
+before animation production.
 
 `make rig-pose` preserves the detected pose as the rig rest pose. To export a
 static T-posed GLB, use `make rig-pose-rest`; it bakes the T-pose as the rest

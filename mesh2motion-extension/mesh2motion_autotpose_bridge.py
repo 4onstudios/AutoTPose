@@ -41,8 +41,6 @@ def run_autotpose(input_path: Path) -> Path:
         "--report",
         str(report_path),
         "--auto-rig",
-        "--bind-method",
-        "DISTANCE",
         "--apply-rest-pose",
     ]
 

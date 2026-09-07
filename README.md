@@ -23,24 +23,21 @@ Created by [4ON Studios](https://www.4onstudios.com/).
 - Does not require hard-coded 90-degree rotations.
 - Provides a headless command interface with machine-readable reports for agent
   and pipeline use.
-- Uses the project-local `instance-rig` auto-rig backend as the primary rigging
-  path when it is available, while keeping the native Blender rigger as a
-  compatibility fallback only.
+- Uses the project-local `instance-rig` auto-rig backend for unrigged humanoid
+  GLB/GLTF processing.
 - Keeps a Blender-independent solver contract ready for a future compiled core.
 
 ## Requirements
 
 - Blender with Python scripting support.
-- A **rigged humanoid model** with an armature.
-
-AutoTPose does **not** automatically rig a completely unrigged mesh.
+- A **rigged humanoid model** with an armature for pose-only processing, or an
+  upright humanoid GLB/GLTF for the `instance-rig` auto-rig workflow.
 
 For automated processing, it accepts rigged `.blend`, `.glb`, and `.gltf`
 inputs and writes a T-posed `.blend` or `.glb` file. For an unrigged, upright
-humanoid, `make rig-pose` can create a basic armature and Blender automatic
-weights before posing. Use `make rig-pose-rest` when the exported GLB must have
-the T-pose baked as its rest pose; review the generated weights before production
-use.
+humanoid GLB/GLTF, `make rig-pose` runs the project-local `instance-rig` backend
+before posing. Use `make rig-pose-rest` when the exported GLB must have the
+T-pose baked as its rest pose; review the generated weights before production use.
 
 ## Quick Start
 
@@ -62,7 +59,7 @@ APPLY_AS_REST_POSE = True
 or call the script-level function explicitly:
 
 ```python
-make_t_pose(auto_rig=True, bind_method="DISTANCE", apply_rest_pose=True)
+make_t_pose(apply_rest_pose=True)
 ```
 
 This is useful when you want the exported GLB to keep the corrected T-pose as
@@ -89,7 +86,7 @@ VERBOSE = True
 AutoTPose uses two stages:
 
 1. **Name-based detection** for common upper-arm and forearm naming conventions.
-2. **Geometry/hierarchy fallback** that examines deform bones, limb proportions,
+2. **Geometry/hierarchy heuristics** that examine deform bones, limb proportions,
    mirrored shoulder placement, ancestry, and outward bone direction.
 
 This makes it more tolerant of custom rigs than scripts that rely on exact bone names.
@@ -121,7 +118,7 @@ See [Architecture](docs/ARCHITECTURE.md) and [Compiled Core Plan](docs/COMPILED_
 ## Current Limitations
 
 - Intended for humanoid rigs.
-- It does not create an armature or skin an unrigged mesh.
+- The auto-rig workflow expects an upright, front-facing humanoid GLB/GLTF.
 - Unusual control rigs, constraints, helper bones, or non-human proportions can confuse automatic detection.
 - Hand/palm orientation and bone roll are preserved as much as possible but are not normalized to a specific engine standard.
 - Existing animation may require retargeting if you apply the generated pose as a new rest pose.
@@ -151,9 +148,7 @@ make test
 ```
 
 The repository keeps `instance-rig` and its TensorFlow/MediaPipe stack confined
-to the project-local environment and treats it as the preferred auto-rigging
-path by default. The native Blender rigger remains available as a compatibility
-fallback when the local backend is unavailable or fails on a particular mesh.
+to the project-local environment and uses it as the only auto-rigging path.
 The project venv uses Python 3.11 because the current `instance-rig` dependency
 chain is compatible with that runtime on macOS; Blender's embedded Python is 3.13,
 so the library is invoked through a subprocess rather than imported directly

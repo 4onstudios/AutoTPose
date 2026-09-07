@@ -4,7 +4,6 @@ BLENDER ?= blender
 INPUT ?=
 OUTPUT ?=
 REPORT ?= autotpose-report.json
-BIND_METHOD ?= AUTO
 PYTHON ?= .venv/bin/python
 VENV_SITE_PACKAGES := $(shell . .venv/bin/activate 2>/dev/null && python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
 
@@ -42,12 +41,12 @@ pose-rest: ## Bake a rest pose. Requires INPUT (.blend/.glb/.gltf) and OUTPUT (.
 rig-pose: ## Auto-rig then T-pose. Requires INPUT (.blend/.glb/.gltf) and OUTPUT (.blend/.glb).
 	@test -n "$(INPUT)" || (echo "Set INPUT to a source .blend, .glb, or .gltf path." >&2; exit 2)
 	@test -n "$(OUTPUT)" || (echo "Set OUTPUT to a destination .blend or .glb path." >&2; exit 2)
-	$(BLENDER) --background --python auto_t_pose.py -- --input "$(INPUT)" --output "$(OUTPUT)" --report "$(REPORT)" --auto-rig --bind-method "$(BIND_METHOD)"
+	$(BLENDER) --background --python auto_t_pose.py -- --input "$(INPUT)" --output "$(OUTPUT)" --report "$(REPORT)" --auto-rig
 
 rig-pose-rest: ## Auto-rig and bake a T-pose rest pose. Requires INPUT and OUTPUT paths.
 	@test -n "$(INPUT)" || (echo "Set INPUT to a source .blend, .glb, or .gltf path." >&2; exit 2)
 	@test -n "$(OUTPUT)" || (echo "Set OUTPUT to a destination .blend or .glb path." >&2; exit 2)
-	$(BLENDER) --background --python auto_t_pose.py -- --input "$(INPUT)" --output "$(OUTPUT)" --report "$(REPORT)" --auto-rig --bind-method "$(BIND_METHOD)" --apply-rest-pose
+	$(BLENDER) --background --python auto_t_pose.py -- --input "$(INPUT)" --output "$(OUTPUT)" --report "$(REPORT)" --auto-rig --apply-rest-pose
 
 legacy-bridge: ## Legacy prototype bridge for browser testing only; not the preferred AutoTPose workflow.
 	@python mesh2motion-extension/mesh2motion_autotpose_bridge.py

@@ -34,5 +34,5 @@ python mesh2motion-extension/mesh2motion_autotpose_bridge.py
 ## Notes
 
 - The bridge uses the same T-pose logic already in `auto_t_pose.py`.
-- It sets `--auto-rig --bind-method DISTANCE --apply-rest-pose` to generate a rigged T-pose output when the input is not already rigged.
+- It sets `--auto-rig --apply-rest-pose` to generate a rigged T-pose output through the project-local instance-rig backend.
 - The result is saved as a generated `*_tpose.glb` file and downloaded back to the browser.

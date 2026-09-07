@@ -40,8 +40,6 @@ VERBOSE = True
 # Detection tuning
 MIN_NAMED_UPPER_ARM_SCORE = 7.0
 MAX_FOREARM_DEPTH = 3
-BIND_METHOD = "AUTO"  # AUTO, DISTANCE, or BONE_HEAT for generated rigs.
-
 
 # -----------------------------------------------------------------------------
 # LOGGING / UTILITIES
@@ -348,206 +346,6 @@ def smooth_mesh_normals(meshes):
         obj.data.update()
 
 
-def detect_mesh_landmarks(meshes):
-    source_dir = Path(__file__).resolve().parent / "src"
-    if str(source_dir) not in sys.path:
-        sys.path.insert(0, str(source_dir))
-    from autotpose_core import MeshSnapshot, Vec3, detect_humanoid_landmarks
-
-    vertices = tuple(
-        Vec3(float(point.x), float(point.y), float(point.z))
-        for mesh in meshes
-        for point in (mesh.matrix_world @ vertex.co for vertex in mesh.data.vertices)
-    )
-    if not vertices:
-        raise RuntimeError("Cannot auto-rig: imported mesh objects contain no vertices.")
-    return detect_humanoid_landmarks(MeshSnapshot(vertices, source_name=" + ".join(mesh.name for mesh in meshes)))
-
-
-def deform_bone_names(armature):
-    return [bone.name for bone in armature.data.bones if bone.use_deform]
-
-
-def weight_coverage(mesh, bone_names):
-    indices = {group.index for group in mesh.vertex_groups if group.name in bone_names}
-    if not indices or not mesh.data.vertices:
-        return 0.0
-    return sum(
-        any(assignment.group in indices and assignment.weight > 1e-6 for assignment in vertex.groups)
-        for vertex in mesh.data.vertices
-    ) / len(mesh.data.vertices)
-
-
-def clear_generated_binding(mesh, armature, bone_names):
-    for modifier in list(mesh.modifiers):
-        if modifier.type == "ARMATURE" and modifier.object == armature:
-            mesh.modifiers.remove(modifier)
-    for name in bone_names:
-        group = mesh.vertex_groups.get(name)
-        if group:
-            mesh.vertex_groups.remove(group)
-    if mesh.parent == armature:
-        world = mesh.matrix_world.copy()
-        mesh.parent = None
-        mesh.matrix_world = world
-
-
-def rig_snapshot_world(armature):
-    from autotpose_core import BoneSnapshot, RigSnapshot, Vec3
-
-    world = armature.matrix_world
-    return RigSnapshot(tuple(
-        BoneSnapshot(
-            bone.name,
-            bone.parent.name if bone.parent else None,
-            Vec3.from_value(world @ bone.head_local),
-            Vec3.from_value(world @ bone.tail_local),
-            bone.use_deform,
-            tuple(child.name for child in bone.children),
-        )
-        for bone in armature.data.bones
-    ), source_name=armature.name)
-
-
-def bind_distance_weights(mesh, armature):
-    from autotpose_core import MeshSnapshot, SkinningOptions, Vec3, compute_skin_weights
-
-    bone_names = deform_bone_names(armature)
-    clear_generated_binding(mesh, armature, bone_names)
-    vertices = tuple(
-        Vec3.from_value(mesh.matrix_world @ vertex.co)
-        for vertex in mesh.data.vertices
-    )
-    influences = compute_skin_weights(
-        MeshSnapshot(vertices, source_name=mesh.name),
-        rig_snapshot_world(armature),
-        SkinningOptions(max_influences=4, prune_weight=0.01),
-    )
-    groups = {name: mesh.vertex_groups.new(name=name) for name in bone_names}
-    for index, vertex_influences in enumerate(influences):
-        for name, weight in vertex_influences:
-            groups[name].add([index], weight, "REPLACE")
-    modifier = mesh.modifiers.new(name="AutoTPose Armature", type="ARMATURE")
-    modifier.object = armature
-    modifier.use_vertex_groups = True
-    modifier.use_bone_envelopes = False
-    world = mesh.matrix_world.copy()
-    mesh.parent = armature
-    mesh.matrix_parent_inverse = armature.matrix_world.inverted()
-    mesh.matrix_world = world
-    if weight_coverage(mesh, bone_names) < 0.999:
-        raise RuntimeError(f"Distance weights did not cover every vertex in {mesh.name}.")
-    log(f"Distance-weighted {mesh.name}: 100% vertex coverage.")
-
-
-def bind_meshes(meshes, armature, method):
-    method = method.upper()
-    if method not in {"AUTO", "DISTANCE", "BONE_HEAT"}:
-        raise ValueError("Binding method must be AUTO, DISTANCE, or BONE_HEAT.")
-    bone_names = deform_bone_names(armature)
-    for mesh in meshes:
-        if method != "DISTANCE":
-            clear_generated_binding(mesh, armature, bone_names)
-            bpy.ops.object.select_all(action="DESELECT")
-            mesh.select_set(True)
-            armature.select_set(True)
-            bpy.context.view_layer.objects.active = armature
-            try:
-                bpy.ops.object.parent_set(type="ARMATURE_AUTO", keep_transform=True)
-            except RuntimeError:
-                pass
-            if weight_coverage(mesh, bone_names) >= 0.985:
-                log(f"Bone heat weighted {mesh.name}.")
-                continue
-            clear_generated_binding(mesh, armature, bone_names)
-            if method == "BONE_HEAT":
-                raise RuntimeError(f"Bone heat did not sufficiently weight {mesh.name}.")
-            log(f"Bone heat failed for {mesh.name}; using distance-weight fallback.")
-        bind_distance_weights(mesh, armature)
-
-
-def bake_generated_tpose_as_rest(armature, bind_method):
-    """Bake the visible T-pose mesh shape before changing generated bone rest axes."""
-    meshes = [mesh for mesh in scene_meshes() if mesh.find_armature() == armature]
-    if not meshes:
-        raise RuntimeError("Cannot bake generated T-pose: no meshes are bound to the generated armature.")
-
-    bpy.ops.object.mode_set(mode="OBJECT")
-    for mesh in meshes:
-        modifiers = [
-            modifier.name
-            for modifier in mesh.modifiers
-            if modifier.type == "ARMATURE" and modifier.object == armature
-        ]
-        if len(modifiers) != 1:
-            raise RuntimeError(f"Cannot bake generated T-pose: expected one armature modifier on {mesh.name}.")
-        bpy.context.view_layer.objects.active = mesh
-        bpy.ops.object.modifier_apply(modifier=modifiers[0])
-
-    bpy.ops.object.select_all(action="DESELECT")
-    armature.select_set(True)
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.mode_set(mode="POSE")
-    bpy.ops.pose.armature_apply(selected=False)
-    bind_meshes(meshes, armature, bind_method)
-
-
-def create_basic_humanoid_rig(bind_method=BIND_METHOD):
-    """Create and bind a landmark-derived biped armature."""
-    meshes = scene_meshes()
-    landmarks = detect_mesh_landmarks(meshes)
-    if landmarks.confidence < 0.5:
-        raise RuntimeError(
-            f"Auto-rig confidence {landmarks.confidence:.2f} is below 0.50. "
-            "Use an upright, roughly symmetric humanoid mesh without large merged props."
-        )
-    for warning in landmarks.warnings:
-        log("WARNING:", warning)
-    points = {landmark.name: Vector(landmark.position.to_list()) for landmark in landmarks.landmarks}
-    height = float(landmarks.metadata["height"])
-
-    bpy.ops.object.mode_set(mode="OBJECT") if bpy.context.object and bpy.context.object.mode != "OBJECT" else None
-    bpy.ops.object.select_all(action="DESELECT")
-    bpy.ops.object.armature_add(enter_editmode=True, location=(0, 0, 0))
-    armature = bpy.context.object
-    armature.name = "AutoTPose_Rig"
-    armature.data.name = "AutoTPose_Rig"
-    edit_bones = armature.data.edit_bones
-    edit_bones.remove(edit_bones[0])
-
-    bones = {}
-
-    def add_bone(name, head, tail, parent=None, connect=False, deform=True):
-        bone = edit_bones.new(name)
-        bone.head = head
-        bone.tail = tail
-        if parent is not None:
-            bone.parent = bones[parent]
-            bone.use_connect = connect and (bone.head - bone.parent.tail).length < height * 0.01
-        bone.use_deform = deform
-        bones[name] = bone
-
-    pelvis = points["pelvis"]
-    add_bone("root", pelvis - Vector((0, 0, max(height * 0.075, 0.02))), pelvis, deform=False)
-    add_bone("pelvis", pelvis, points["spine"], "root", connect=True)
-    add_bone("spine", points["spine"], points["chest"], "pelvis", connect=True)
-    add_bone("neck", points["chest"], points["neck"], "spine", connect=True)
-    add_bone("head", points["neck"], points["head"], "neck", connect=True)
-
-    for side in ("L", "R"):
-        add_bone(f"clavicle.{side}", points["chest"], points[f"shoulder.{side}"], "spine", connect=True)
-        add_bone(f"upper_arm.{side}", points[f"shoulder.{side}"], points[f"elbow.{side}"], f"clavicle.{side}", connect=True)
-        add_bone(f"forearm.{side}", points[f"elbow.{side}"], points[f"wrist.{side}"], f"upper_arm.{side}", connect=True)
-        add_bone(f"hand.{side}", points[f"wrist.{side}"], points[f"hand_tip.{side}"], f"forearm.{side}", connect=True)
-        add_bone(f"thigh.{side}", points[f"hip.{side}"], points[f"knee.{side}"], "pelvis")
-        add_bone(f"shin.{side}", points[f"knee.{side}"], points[f"ankle.{side}"], f"thigh.{side}", connect=True)
-
-    bpy.ops.object.mode_set(mode="OBJECT")
-    bind_meshes(meshes, armature, bind_method)
-    log(f"Created and weighted landmark-derived armature: {armature.name}")
-    return armature
-
-
 # -----------------------------------------------------------------------------
 # NAME-BASED DETECTION
 # -----------------------------------------------------------------------------
@@ -762,7 +560,7 @@ def find_geometric_upper_arms(arm):
                 best = (a, b)
 
     if best is not None and best_score > 4.0:
-        log(f"Geometry fallback: A={best[0].name}, B={best[1].name}, score={best_score:.2f}")
+        log(f"Geometry detection: A={best[0].name}, B={best[1].name}, score={best_score:.2f}")
         return best
 
     return None
@@ -828,7 +626,7 @@ def find_forearm(upper, target_direction):
         log(f"Forearm for {upper.name}: {named[0][1].name} (name score {named[0][0]:.1f})")
         return named[0][1]
 
-    # Geometry fallback: comparable length, close to the upper-arm tail, and
+    # Geometry heuristic: comparable length, close to the upper-arm tail, and
     # generally continuing outward. This also skips short twist helpers.
     ulen = bone_length(upper)
     best = None
@@ -1098,58 +896,6 @@ def armature_meshes(armature):
     return meshes
 
 
-def validate_mesh_tpose_reach(armature, upper_left, upper_right, forearms=()):
-    """Ensure the visible mesh follows the generated T-pose arm span."""
-    meshes = armature_meshes(armature)
-    if not meshes:
-        raise RuntimeError("T-pose mesh validation failed: no meshes are bound to the generated armature.")
-
-    middle = (upper_left.head + upper_right.head) * 0.5
-    shoulder_axis = upper_right.head - upper_left.head
-    if shoulder_axis.length < 1e-6:
-        raise RuntimeError("T-pose mesh validation failed: shoulder axis is degenerate.")
-    right_axis = shoulder_axis.normalized()
-    left_axis = -right_axis
-
-    def projected_endpoint_reach(axis, bones):
-        reach = 0.0
-        for bone in bones:
-            if bone is None:
-                continue
-            reach = max(reach, (bone.head - middle).dot(axis), (bone.tail - middle).dot(axis))
-        return reach
-
-    left_bones = [upper_left] + [bone for bone in forearms if bone and bone.parent == upper_left]
-    right_bones = [upper_right] + [bone for bone in forearms if bone and bone.parent == upper_right]
-    left_bone_reach = projected_endpoint_reach(left_axis, left_bones)
-    right_bone_reach = projected_endpoint_reach(right_axis, right_bones)
-    if left_bone_reach <= 1e-6 or right_bone_reach <= 1e-6:
-        raise RuntimeError("T-pose mesh validation failed: arm reach is degenerate.")
-
-    left_mesh_reach = 0.0
-    right_mesh_reach = 0.0
-    for mesh in meshes:
-        for vertex in mesh.data.vertices:
-            world = mesh.matrix_world @ vertex.co
-            left_mesh_reach = max(left_mesh_reach, (world - middle).dot(left_axis))
-            right_mesh_reach = max(right_mesh_reach, (world - middle).dot(right_axis))
-
-    left_ratio = left_mesh_reach / left_bone_reach
-    right_ratio = right_mesh_reach / right_bone_reach
-    if left_ratio < 0.70 or right_ratio < 0.70:
-        raise RuntimeError(
-            "T-pose mesh validation failed: generated bones reached a T-pose, but the skinned mesh did not follow. "
-            f"left_ratio={left_ratio:.2f}, right_ratio={right_ratio:.2f}"
-        )
-
-    return {
-        "left_mesh_reach": float(left_mesh_reach),
-        "right_mesh_reach": float(right_mesh_reach),
-        "left_bone_reach": float(left_bone_reach),
-        "right_bone_reach": float(right_bone_reach),
-    }
-
-
 def reset_pose(arm):
     for pb in arm.pose.bones:
         try:
@@ -1179,7 +925,7 @@ def ensure_armature_active_in_pose_mode(arm):
 # MAIN
 # -----------------------------------------------------------------------------
 
-def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
+def make_t_pose(apply_rest_pose=None):
     """Create a T-pose for the active armature.
 
     When apply_rest_pose is None, the module-level APPLY_AS_REST_POSE setting is
@@ -1191,19 +937,11 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
 
     arm = find_armature()
     if not arm:
-        if auto_rig:
-            arm = create_basic_humanoid_rig(bind_method)
-        else:
-            raise RuntimeError(
-                "No armature found after import "
-                f"(scene objects: {scene_object_summary()}). AutoTPose requires a rigged "
-                "model with an armature; use --auto-rig to create a basic humanoid rig."
-            )
-    if not arm:
         raise RuntimeError(
             "No armature found after import "
             f"(scene objects: {scene_object_summary()}). AutoTPose requires a rigged "
-            "model with an armature; it does not create a rig for an unrigged mesh."
+            "model with an armature; use --auto-rig to process an unrigged humanoid "
+            "through the instance-rig backend."
         )
 
     log(f"Using armature: {arm.name} ({len(arm.data.bones)} bones)")
@@ -1246,7 +984,7 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
             target_b = arm_outward_direction(arm_b, shoulder_mid, preferred_axis=arm_b.head - shoulder_mid)
 
         if target_a is None or target_b is None:
-            # Extremely unusual fallback: use the separation of the bone anchors.
+            # Extremely unusual rig layout: use the separation of the bone anchors.
             target_a = arm_a.head - shoulder_mid
             target_b = arm_b.head - shoulder_mid
             if target_a.length < 1e-8 or target_b.length < 1e-8:
@@ -1303,12 +1041,7 @@ def make_t_pose(auto_rig=False, bind_method=BIND_METHOD, apply_rest_pose=None):
         log("Pose validation passed:", validation)
 
         if apply_rest_pose:
-            if auto_rig:
-                bake_generated_tpose_as_rest(arm, bind_method)
-                mesh_validation = validate_mesh_tpose_reach(arm, arm_a, arm_b, tuple(forearm_bones))
-                log("Mesh validation passed:", mesh_validation)
-            else:
-                bpy.ops.pose.armature_apply(selected=False)
+            bpy.ops.pose.armature_apply(selected=False)
             log("Applied T-pose as NEW REST POSE.")
         else:
             log("T-pose created as a pose only. Rest pose was NOT changed.")
@@ -1343,49 +1076,31 @@ def use_preposed_instance_rig():
 
 
 def prepare_instance_rigged_input(input_path):
-    """Use the project-local instance-rig backend as the primary auto-rig path.
-
-    The native Blender rig builder is retained only as a compatibility fallback for
-    cases where the ML-backed library is unavailable or cannot process a mesh. This
-    keeps the repo's app-facing workflow aligned with the working auto-rigging
-    backend while preserving a safety net for smaller or unusual cases.
-    """
+    """Use the project-local instance-rig backend for all auto-rig runs."""
     try:
         from autotpose_core.instance_rig_bridge import generate_instance_rigged_model
     except Exception as exc:
-        log(f"instance-rig bridge unavailable: {exc}")
-        return None
+        raise RuntimeError(f"instance-rig bridge unavailable: {exc}") from exc
 
     temp_output = Path(input_path).with_name(f".{Path(input_path).stem}_instancerig.glb")
-    try:
-        log(f"Using project-local instance-rig backend for {input_path}")
-        result = generate_instance_rigged_model(
-            input_path,
-            temp_output,
-            on_progress=lambda step: log(f"[instance-rig] {step}"),
-        )
-        if result.exists():
-            return result
-    except Exception as exc:
-        log(f"instance-rig backend failed; falling back to native rigging: {exc}")
-    return None
+    log(f"Using project-local instance-rig backend for {input_path}")
+    result = generate_instance_rigged_model(
+        input_path,
+        temp_output,
+        on_progress=lambda step: log(f"[instance-rig] {step}"),
+    )
+    if not result.exists():
+        raise RuntimeError(f"instance-rig did not create the expected output: {result}")
+    return result
 
 
 def command_line_options(arguments):
-    """Parse the small, explicit option surface used after Blender's `--`.
-
-    Auto-rigging defaults to the project-local instance-rig backend when the
-    repository's environment is available, while the native Blender rigger is
-    retained as a compatibility fallback only. Use --native-rig-only to force the
-    older path when needed for debugging or comparison.
-    """
+    """Parse the small, explicit option surface used after Blender's `--`."""
     options = {
         "input": None,
         "output": None,
         "report": None,
         "auto_rig": True,
-        "prefer_instance_rig": True,
-        "bind_method": BIND_METHOD,
         "apply_rest_pose": False,
         "straighten_forearms": True,
     }
@@ -1397,16 +1112,10 @@ def command_line_options(arguments):
             options["output"] = next(iterator, None)
         elif argument == "--report":
             options["report"] = next(iterator, None)
-        elif argument in {"--auto-rig", "--prefer-instance-rig"}:
+        elif argument == "--auto-rig":
             options["auto_rig"] = True
-            options["prefer_instance_rig"] = True
-        elif argument in {"--no-auto-rig", "--native-rig-only"}:
-            if argument == "--native-rig-only":
-                options["prefer_instance_rig"] = False
-            else:
-                options["auto_rig"] = False
-        elif argument == "--bind-method":
-            options["bind_method"] = next(iterator, None)
+        elif argument == "--no-auto-rig":
+            options["auto_rig"] = False
         elif argument == "--apply-rest-pose":
             options["apply_rest_pose"] = True
         elif argument == "--no-straighten-forearms":
@@ -1416,9 +1125,6 @@ def command_line_options(arguments):
 
     if arguments and (not options["input"] or not options["output"] or not options["report"]):
         raise ValueError("Agent mode requires --input, --output, and --report")
-    if options["bind_method"] is None or options["bind_method"].upper() not in {"AUTO", "DISTANCE", "BONE_HEAT"}:
-        raise ValueError("--bind-method must be AUTO, DISTANCE, or BONE_HEAT")
-    options["bind_method"] = options["bind_method"].upper()
     return options
 
 
@@ -1484,25 +1190,18 @@ def run_from_command_line():
         if input_path == output_path:
             raise ValueError("--output must differ from --input")
 
-        auto_rig_used = False
         cleanup = None
-        if options["auto_rig"] and options["prefer_instance_rig"]:
+        if options["auto_rig"]:
             instance_rig_output = prepare_instance_rigged_input(str(input_path))
-            if instance_rig_output is not None:
-                auto_rig_used = True
-                bpy.ops.object.select_all(action="SELECT")
-                bpy.ops.object.delete(use_global=False)
-                bpy.ops.import_scene.gltf(filepath=str(instance_rig_output))
-                input_path = instance_rig_output
+            bpy.ops.object.select_all(action="SELECT")
+            bpy.ops.object.delete(use_global=False)
+            bpy.ops.import_scene.gltf(filepath=str(instance_rig_output))
+            input_path = instance_rig_output
 
-        if auto_rig_used:
+        if options["auto_rig"]:
             arm, upper_arms, forearms = use_preposed_instance_rig()
         else:
-            arm, upper_arms, forearms = make_t_pose(
-                auto_rig=options["auto_rig"],
-                bind_method=options["bind_method"],
-                apply_rest_pose=options["apply_rest_pose"],
-            )
+            arm, upper_arms, forearms = make_t_pose(apply_rest_pose=options["apply_rest_pose"])
         if options["auto_rig"]:
             stretch_limit = max(source_max_edge_length * 1.8, 1e-6)
             meshes = armature_meshes(arm)
@@ -1536,8 +1235,7 @@ def run_from_command_line():
             forearms=list(forearms),
             applied_as_rest_pose=APPLY_AS_REST_POSE,
             auto_rigged=options["auto_rig"],
-            backend="instance-rig" if auto_rig_used else "native-blender",
-            bind_method=options["bind_method"] if options["auto_rig"] else None,
+            backend="instance-rig" if options["auto_rig"] else "existing-armature",
             straighten_forearms=STRAIGHTEN_FOREARMS,
             validation_passed=True,
             cleanup=cleanup,
