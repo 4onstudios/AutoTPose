@@ -29,7 +29,7 @@ python mesh2motion-extension/mesh2motion_autotpose_bridge.py
 
 - Blender installed at `/Applications/Blender.app/Contents/MacOS/Blender`
 - A valid humanoid GLB/GLTF file
-- The project root is the AutoTPose repo at `/path/to/AutoTPose`
+- Run the bridge from the AutoTPose repository root.
 
 ## Notes
 
